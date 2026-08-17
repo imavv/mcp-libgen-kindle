@@ -12,6 +12,9 @@ import { validateEpub } from "@/lib/epub/validate";
  *
  *   curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
  *        "https://<your-deployment>/selftest?q=of+mice+and+men"
+ *
+ * Also accepts the token as ?token=... instead of a header, matching the MCP
+ * route — see the comment on withAuth in app/api/[transport]/route.ts for why.
  */
 /** 60 is the Hobby ceiling; exceeding the plan limit fails the deployment. */
 export const maxDuration = 60;
@@ -40,12 +43,17 @@ export async function GET(req: Request) {
     );
   }
 
-  const header = req.headers.get("authorization");
-  if (!header) {
-    return new Response("Missing Authorization header.", { status: 401 });
-  }
+  const url = new URL(req.url);
+  const header = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const queryToken = url.searchParams.get("token")?.trim();
+  const provided = header || queryToken;
 
-  const provided = header.replace(/^Bearer\s+/i, "").trim();
+  if (!provided) {
+    return new Response(
+      "No token supplied. Send an Authorization: Bearer header, or add ?token=... to the URL.",
+      { status: 401 }
+    );
+  }
   if (provided !== expected) {
     return new Response(
       `Token mismatch. Server expects a ${expected.length}-character token; ` +
@@ -54,7 +62,6 @@ export async function GET(req: Request) {
     );
   }
 
-  const url = new URL(req.url);
   const query = url.searchParams.get("q") || "of mice and men steinbeck";
   const skipDownload = url.searchParams.get("download") === "0";
 

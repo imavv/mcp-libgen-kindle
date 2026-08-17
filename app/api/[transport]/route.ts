@@ -176,6 +176,23 @@ const handler = createMcpHandler(
 /**
  * This endpoint downloads files and sends mail from a personal Gmail account,
  * so it must not be open to the internet.
+ *
+ * Accepts the token from either the Authorization header or a ?token= query
+ * param. The header is what curl and npm run check use. The query param
+ * exists because the Claude custom-connector UI has no field for a custom
+ * header — it only lets you configure a URL — and on any 401 it attempts
+ * OAuth dynamic client registration against this domain, which this server
+ * does not implement and fails with a confusing "couldn't register with
+ * sign-in service" error. Putting the token in the URL means the very first
+ * request already authenticates, so the client never receives a 401 and
+ * never has a reason to attempt OAuth. WWW-Authenticate is deliberately not
+ * sent on failure, since that header is what invited the OAuth attempt in
+ * the first place.
+ *
+ * A URL-embedded token is a real step down from a header: it lands in
+ * Vercel's access logs and leaks if the URL is ever pasted somewhere else.
+ * Treat the deployment URL with the token attached as a secret in its own
+ * right, not just the token in isolation.
  */
 function withAuth(inner: (req: Request) => Promise<Response>) {
   return async (req: Request): Promise<Response> => {
@@ -189,12 +206,12 @@ function withAuth(inner: (req: Request) => Promise<Response>) {
       );
     }
 
-    const provided = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+    const header = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+    const query = new URL(req.url).searchParams.get("token")?.trim();
+    const provided = header || query;
+
     if (provided !== expected) {
-      return new Response("Unauthorized", {
-        status: 401,
-        headers: { "WWW-Authenticate": "Bearer" },
-      });
+      return new Response("Unauthorized", { status: 401 });
     }
     return inner(req);
   };

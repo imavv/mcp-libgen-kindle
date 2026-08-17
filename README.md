@@ -154,8 +154,24 @@ Add `&download=0` to test search only.
 
 ### 9. Connect to Claude
 
-Add as a custom connector pointing at `https://<deployment>/api/mcp`, with the
-`Authorization: Bearer <MCP_AUTH_TOKEN>` header.
+Add as a custom connector, using this exact URL shape:
+
+```
+https://<deployment>/api/mcp?token=<MCP_AUTH_TOKEN>
+```
+
+The token has to be in the URL, not a header — the connector UI has no field
+for custom headers, and if the URL is configured without any credential its
+first request gets a 401, which the client reads as an invitation to attempt
+OAuth sign-in ("couldn't register with mcp-libgen-kindle's sign-in service").
+This server doesn't implement OAuth, so that always fails. Putting the token
+in the URL means the very first request already authenticates, so no 401 is
+ever produced and the OAuth attempt never triggers.
+
+This is a real downgrade from a header: the token now sits in Vercel's access
+logs, and leaks if the URL is ever pasted anywhere else. Treat the full URL,
+not just the token, as something to keep private — if it needs to be rotated,
+changing `MCP_AUTH_TOKEN` in Vercel and reconnecting the connector is enough.
 
 ## Local commands
 
