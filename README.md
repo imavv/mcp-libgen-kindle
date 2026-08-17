@@ -27,6 +27,28 @@ re-send a book without touching libgen again.
 **No Playwright.** Serverless bundles cap out around 250 MB and Chromium does
 not fit. Everything here is plain `fetch`.
 
+### The download chain
+
+Worth knowing before debugging this, because none of it is guessable:
+
+`get.php?md5=...` does not serve the file. It redirects to `ads.php`, whose
+HTML carries the real link with a per-request key:
+
+```
+get.php?md5=23fcc521...&key=RRSN1X66L729FJNH
+```
+
+That key changes on every fetch, so it must be read from the page just loaded
+and used immediately. It cannot be cached or constructed. Following it lands on
+a CDN host (`cdn2.booksdl.lc` at time of writing) which returns
+`application/octet-stream`.
+
+The link-matching pattern is deliberately narrow. A looser one that also
+matched `cdn.` picked up the ads page's own `bootstrap.min.css` from jsDelivr
+and fed the stylesheet to the epub validator, which reported it as
+`got bytes 2f 2a` — the opening of a CSS comment. If this breaks again, check
+what `fetchFileOrFollow` actually retrieved before assuming the mirror is down.
+
 ## Setup
 
 ### 1. Install
