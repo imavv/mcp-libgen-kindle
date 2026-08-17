@@ -35,8 +35,13 @@ export const config = {
  * instead of eating the whole function budget. Vercel kills the invocation
  * with no partial result, so we would rather give up early and try the
  * next mirror.
+ *
+ * This covers reading the response body too, so it trades off against large
+ * files: 18s is about 280 kB/s for a 5 MB epub. Erring low is deliberate —
+ * a mirror that silently drops the connection costs a full timeout each
+ * attempt, and getting through more mirrors beats waiting on a dead one.
  */
-export const FETCH_TIMEOUT_MS = 25_000;
+export const FETCH_TIMEOUT_MS = 18_000;
 
 /** Browser-ish UA. Some mirrors 403 the default fetch agent. */
 export const USER_AGENT =

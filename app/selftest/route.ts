@@ -16,6 +16,16 @@ import { validateEpub } from "@/lib/epub/validate";
 /** 60 is the Hobby ceiling; exceeding the plan limit fails the deployment. */
 export const maxDuration = 60;
 
+/**
+ * This route is the only place that runs search and download in one
+ * invocation, so it has to budget across both. Vercel kills an over-running
+ * function with no response body at all, which is the least useful possible
+ * outcome for a diagnostic endpoint — better to stop early and report what
+ * we learned.
+ */
+const OVERALL_BUDGET_MS = 45_000;
+const MIN_DOWNLOAD_MS = 8_000;
+
 export async function GET(req: Request) {
   // Distinguish "server has no token" from "caller sent the wrong one". Both
   // returning 401 makes a missing Vercel env var look identical to a typo,
@@ -76,9 +86,19 @@ export async function GET(req: Request) {
       return Response.json({ ok: true, totalMs: Date.now() - started, steps });
     }
 
+    const budgetLeft = OVERALL_BUDGET_MS - (Date.now() - started);
+    if (budgetLeft < MIN_DOWNLOAD_MS) {
+      steps.download = {
+        ok: false,
+        skipped: true,
+        reason: `Search used ${Date.now() - started}ms of a ${OVERALL_BUDGET_MS}ms budget, leaving too little to attempt a download. Search itself works — retry with &download=0 to confirm, and treat the search latency as the problem.`,
+      };
+      return Response.json({ ok: false, totalMs: Date.now() - started, steps }, { status: 504 });
+    }
+
     const t1 = Date.now();
     const target = result.candidates[0];
-    const dl = await downloadByMd5(target.md5);
+    const dl = await downloadByMd5(target.md5, budgetLeft);
     const check = validateEpub(dl.buffer);
     steps.download = {
       ok: check.ok,
