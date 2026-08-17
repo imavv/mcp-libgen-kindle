@@ -181,9 +181,15 @@ function withAuth(inner: (req: Request) => Promise<Response>) {
   return async (req: Request): Promise<Response> => {
     const expected = process.env.MCP_AUTH_TOKEN;
     if (!expected) {
-      return new Response("Server misconfigured: MCP_AUTH_TOKEN is not set.", { status: 500 });
+      return new Response(
+        "MCP_AUTH_TOKEN is not set on the server. Add it in the Vercel project's " +
+          "environment variables, then redeploy — existing deployments do not pick " +
+          "up variables added after they were built.",
+        { status: 503 }
+      );
     }
-    const provided = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+
+    const provided = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
     if (provided !== expected) {
       return new Response("Unauthorized", {
         status: 401,

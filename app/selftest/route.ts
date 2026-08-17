@@ -17,10 +17,31 @@ import { validateEpub } from "@/lib/epub/validate";
 export const maxDuration = 60;
 
 export async function GET(req: Request) {
+  // Distinguish "server has no token" from "caller sent the wrong one". Both
+  // returning 401 makes a missing Vercel env var look identical to a typo,
+  // which is the difference between redeploying and re-copying a value.
   const expected = process.env.MCP_AUTH_TOKEN;
-  const provided = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  if (!expected || provided !== expected) {
-    return new Response("Unauthorized", { status: 401 });
+  if (!expected) {
+    return new Response(
+      "MCP_AUTH_TOKEN is not set on the server. Add it in the Vercel project's " +
+        "environment variables, then redeploy — existing deployments do not pick " +
+        "up variables added after they were built.",
+      { status: 503 }
+    );
+  }
+
+  const header = req.headers.get("authorization");
+  if (!header) {
+    return new Response("Missing Authorization header.", { status: 401 });
+  }
+
+  const provided = header.replace(/^Bearer\s+/i, "").trim();
+  if (provided !== expected) {
+    return new Response(
+      `Token mismatch. Server expects a ${expected.length}-character token; ` +
+        `received ${provided.length} characters.`,
+      { status: 401 }
+    );
   }
 
   const url = new URL(req.url);
