@@ -8,12 +8,15 @@ import { uploadEpub, downloadEpub, listLibrary } from "@/lib/storage/drive";
 import { sendToKindle } from "@/lib/email/kindle";
 
 /**
- * Downloads from libgen mirrors are routinely slow. Raise this as far as your
- * Vercel plan allows (Hobby tops out lower than Pro) — the per-fetch timeout
- * in lib/config.ts is deliberately set below it so a single slow mirror fails
- * over instead of consuming the whole invocation.
+ * Downloads from libgen mirrors are routinely slow, so this wants to be as
+ * high as the plan allows. 60 is the Hobby ceiling; Vercel fails the whole
+ * deployment rather than clamping if you exceed it, so this stays at the safe
+ * value. On Pro, raise it to 300 here and in app/selftest/route.ts.
+ *
+ * The per-fetch timeout in lib/config.ts is deliberately set below this so a
+ * single slow mirror fails over instead of consuming the whole invocation.
  */
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 function text(body: string) {
   return { content: [{ type: "text" as const, text: body }] };

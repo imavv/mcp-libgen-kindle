@@ -1,4 +1,4 @@
-import { config, fetchWithTimeout } from "../config";
+import { config, fetchWithTimeout, FETCH_TIMEOUT_MS } from "../config";
 import { validateEpub } from "../epub/validate";
 
 /**
@@ -53,9 +53,14 @@ async function readBody(res: Response): Promise<Buffer> {
 /** Fetch a URL and, if it hands back an HTML page, follow one link from it. */
 async function fetchFileOrFollow(
   url: string,
-  referer: string
+  referer: string,
+  timeoutMs: number
 ): Promise<{ buffer: Buffer; url: string } | null> {
-  const res = await fetchWithTimeout(url, { headers: { Referer: referer }, redirect: "follow" });
+  const res = await fetchWithTimeout(
+    url,
+    { headers: { Referer: referer }, redirect: "follow" },
+    timeoutMs
+  );
   if (!res.ok) return null;
 
   const contentType = res.headers.get("content-type") || "";
@@ -73,10 +78,11 @@ async function fetchFileOrFollow(
     if (seen.has(target) || target === url) continue;
     seen.add(target);
 
-    const inner = await fetchWithTimeout(target, {
-      headers: { Referer: res.url || url },
-      redirect: "follow",
-    });
+    const inner = await fetchWithTimeout(
+      target,
+      { headers: { Referer: res.url || url }, redirect: "follow" },
+      timeoutMs
+    );
     if (!inner.ok) continue;
     if ((inner.headers.get("content-type") || "").includes("text/html")) continue;
 
@@ -87,21 +93,49 @@ async function fetchFileOrFollow(
 }
 
 /**
+ * Total time to spend across every mirror and path shape.
+ *
+ * The route's maxDuration is 60s on Hobby, and Vercel kills the invocation
+ * outright when it expires — no partial result, no error we can return. With
+ * four mirrors times four path shapes there are sixteen possible attempts, so
+ * without a shared deadline a few slow mirrors would consume the budget before
+ * reaching a working one. Better to give up cleanly and report what we tried.
+ */
+const TOTAL_BUDGET_MS = 50_000;
+
+/** Below this there is no point starting another attempt. */
+const MIN_ATTEMPT_MS = 6_000;
+
+/**
  * Fetch an epub by md5, validating the bytes before returning them.
  *
  * Returns the buffer rather than writing to disk: on Vercel the only writable
  * path is /tmp, which is not guaranteed to survive to the next invocation.
  * Persistence is the storage layer's job.
  */
-export async function downloadByMd5(md5: string): Promise<DownloadResult> {
+export async function downloadByMd5(
+  md5: string,
+  budgetMs = TOTAL_BUDGET_MS
+): Promise<DownloadResult> {
   const attempts: string[] = [];
   const mirrors = config.mirrors();
+  const deadline = Date.now() + budgetMs;
 
   for (const mirror of mirrors) {
     for (const buildPath of DOWNLOAD_PATHS) {
+      const remaining = deadline - Date.now();
+      if (remaining < MIN_ATTEMPT_MS) {
+        attempts.push(`gave up after ${Math.round(budgetMs / 1000)}s budget exhausted`);
+        return failed(md5, attempts);
+      }
+
       const url = buildPath(mirror, md5);
       try {
-        const got = await fetchFileOrFollow(url, `${mirror}/`);
+        const got = await fetchFileOrFollow(
+          url,
+          `${mirror}/`,
+          Math.min(FETCH_TIMEOUT_MS, remaining)
+        );
         if (!got) {
           attempts.push(`${url}: no file link found`);
           continue;
@@ -120,6 +154,10 @@ export async function downloadByMd5(md5: string): Promise<DownloadResult> {
     }
   }
 
+  return failed(md5, attempts);
+}
+
+function failed(md5: string, attempts: string[]): never {
   throw new Error(
     `Could not retrieve a valid EPUB for md5 ${md5}. Tried:\n` +
       attempts.map((a) => `  - ${a}`).join("\n")

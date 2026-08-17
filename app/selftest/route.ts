@@ -13,7 +13,8 @@ import { validateEpub } from "@/lib/epub/validate";
  *   curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
  *        "https://<your-deployment>/selftest?q=of+mice+and+men"
  */
-export const maxDuration = 300;
+/** 60 is the Hobby ceiling; exceeding the plan limit fails the deployment. */
+export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const expected = process.env.MCP_AUTH_TOKEN;
