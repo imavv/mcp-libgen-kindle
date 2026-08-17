@@ -7,16 +7,35 @@ import { validateEpub } from "../epub/validate";
  * one level of intermediate page, and accept whichever first yields bytes that
  * validate. Adding a new mirror shape later is a one-line change here.
  */
+/**
+ * ads.php is the real entry point. get.php without a key just redirects here,
+ * so it is only kept as a fallback for mirrors that serve the file directly.
+ */
 const DOWNLOAD_PATHS = [
-  (mirror: string, md5: string) => `${mirror}/get.php?md5=${md5}`,
   (mirror: string, md5: string) => `${mirror}/ads.php?md5=${md5}`,
-  (_m: string, md5: string) => `https://library.lol/fiction/${md5.toUpperCase()}`,
-  (_m: string, md5: string) => `https://library.lol/main/${md5.toUpperCase()}`,
+  (mirror: string, md5: string) => `${mirror}/get.php?md5=${md5}`,
 ];
 
-/** Hrefs on the intermediate page that actually point at the file. */
-const DIRECT_LINK_RE =
-  /href\s*=\s*["']([^"']*(?:get\.php\?[^"']*md5=|\/main\/|cdn\d?\.|download)[^"']*)["']/gi;
+/**
+ * The download link on the ads page, which carries a per-request key:
+ *   get.php?md5=<md5>&key=BC0RO3IV1BPY0SHN
+ *
+ * The key differs on every fetch, so it has to be read from the page we just
+ * loaded and used immediately — it cannot be cached or constructed.
+ *
+ * This pattern is deliberately narrow. A looser one that also matched "cdn."
+ * and "download" picked up the page's own bootstrap.min.css from jsDelivr and
+ * fed the stylesheet to the epub validator.
+ */
+const KEYED_LINK_RE = /href\s*=\s*["']([^"']*get\.php\?[^"']*\bkey=[^"']*)["']/gi;
+
+/** Fallback for mirrors using a different shape, still excluding page assets. */
+const FALLBACK_LINK_RE =
+  /href\s*=\s*["']([^"']*(?:get\.php\?[^"']*md5=|\/main\/[0-9a-f]{32}|\.epub)[^"']*)["']/gi;
+
+/** Static assets that must never be mistaken for the book. */
+const ASSET_PATH_RE = /\.(css|js|png|jpe?g|gif|ico|svg|woff2?|ttf|webp)(\?|#|$)/i;
+const ASSET_TYPE_RE = /text\/css|javascript|^image\/|^font\/|^text\/plain/i;
 
 const MAX_BYTES = 50 * 1024 * 1024; // Amazon's per-message attachment ceiling.
 
@@ -64,27 +83,39 @@ async function fetchFileOrFollow(
   if (!res.ok) return null;
 
   const contentType = res.headers.get("content-type") || "";
-  const looksHtml = contentType.includes("text/html");
+  if (ASSET_TYPE_RE.test(contentType)) return null;
 
-  if (!looksHtml) {
+  if (!contentType.includes("text/html")) {
     const buffer = await readBody(res);
     return { buffer, url: res.url || url };
   }
 
   const html = await res.text();
-  const seen = new Set<string>();
-  for (const m of html.matchAll(DIRECT_LINK_RE)) {
-    const target = absolutise(m[1], res.url || url);
-    if (seen.has(target) || target === url) continue;
-    seen.add(target);
+  const base = res.url || url;
 
+  // Keyed links first: on libgen.li that is the only one that yields a file.
+  const seen = new Set<string>();
+  const targets: string[] = [];
+  for (const re of [KEYED_LINK_RE, FALLBACK_LINK_RE]) {
+    re.lastIndex = 0;
+    for (const m of html.matchAll(re)) {
+      const target = absolutise(m[1], base);
+      if (seen.has(target) || target === url || ASSET_PATH_RE.test(target)) continue;
+      seen.add(target);
+      targets.push(target);
+    }
+  }
+
+  for (const target of targets) {
     const inner = await fetchWithTimeout(
       target,
-      { headers: { Referer: res.url || url }, redirect: "follow" },
+      { headers: { Referer: base }, redirect: "follow" },
       timeoutMs
     );
     if (!inner.ok) continue;
-    if ((inner.headers.get("content-type") || "").includes("text/html")) continue;
+
+    const innerType = inner.headers.get("content-type") || "";
+    if (innerType.includes("text/html") || ASSET_TYPE_RE.test(innerType)) continue;
 
     const buffer = await readBody(inner);
     return { buffer, url: inner.url || target };

@@ -37,6 +37,15 @@ export function validateEpub(buf: Buffer | Uint8Array): ValidationResult {
     };
   }
 
+  // Naming the wrong-file case beats reporting raw bytes. A page asset getting
+  // this far once cost a long debugging detour: "/*" is bootstrap.min.css.
+  if (/^\s*\/\*/.test(head)) {
+    return { ok: false, reason: "Got a CSS or JavaScript file, not a book — a page asset was followed instead of the download link." };
+  }
+  if (/^\s*(<\?xml|<!--)/.test(head)) {
+    return { ok: false, reason: "Got an XML or markup document, not an EPUB archive." };
+  }
+
   if (!(bytes[0] === 0x50 && bytes[1] === 0x4b)) {
     return {
       ok: false,
