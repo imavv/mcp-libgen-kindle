@@ -81,6 +81,18 @@ export function buildFilename(title: string, author: string): string {
 
   const t = clean(title) || "Untitled";
   const a = clean(author);
-  const stem = (a ? `${t} - ${a}` : t).slice(0, 150).replace(/[\s.-]+$/, "");
+  // 60 keeps the full filename at 65 chars, which is the most nodemailer will
+  // put on one Content-Disposition line. Past that it switches to RFC 2231
+  // continuations (filename*0/*1/*2), which Amazon's parser handles badly.
+  // Cut back to a word boundary when truncating, since this string is what
+  // shows up as the title on the device.
+  const full = a ? `${t} - ${a}` : t;
+  let stem = full;
+  if (stem.length > 60) {
+    stem = stem.slice(0, 60);
+    const lastSpace = stem.lastIndexOf(" ");
+    if (lastSpace > 30) stem = stem.slice(0, lastSpace);
+  }
+  stem = stem.replace(/[\s.-]+$/, "");
   return `${stem}.epub`;
 }

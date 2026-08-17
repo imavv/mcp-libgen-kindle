@@ -44,7 +44,12 @@ export async function sendToKindle(
     // Amazon ignores the subject for personal documents, but a readable one
     // helps when you are digging through sent mail to debug a missing book.
     subject: filename.replace(/\.epub$/i, ""),
-    text: "",
+    // Must be non-empty. Nodemailer treats a falsy body as "no text part", and
+    // with the attachment then the only part it emits a single-part message
+    // whose top-level Content-Type is application/epub+zip — no multipart/mixed
+    // wrapper at all. Amazon walks the parts looking for an attachment, finds
+    // no structure, and rejects the whole thing with "E009 - No Attachment".
+    text: "Sent via libgen-kindle.",
     attachments: [
       { filename, content: buffer, contentType: "application/epub+zip" },
     ],
