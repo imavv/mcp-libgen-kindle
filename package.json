@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "auth": "node scripts/get-refresh-token.mjs",
     "check": "tsx scripts/check-config.ts",
-    "preview": "tsx scripts/search-preview.ts"
+    "preview": "tsx scripts/search-preview.ts",
+    "oauth": "tsx scripts/oauth-demo.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -6,6 +6,14 @@ import { downloadByMd5 } from "@/lib/libgen/download";
 import { buildFilename } from "@/lib/epub/validate";
 import { uploadEpub, downloadEpub, listLibrary } from "@/lib/storage/drive";
 import { sendToKindle } from "@/lib/email/kindle";
+import {
+  ALL_SCOPES,
+  TOOL_SCOPES,
+  origin,
+  readTyped,
+  resourceUrl,
+} from "@/lib/oauth/server";
+import { secretEquals } from "@/lib/oauth/jwt";
 
 /**
  * Downloads from libgen mirrors are routinely slow, so this wants to be as
@@ -194,42 +202,159 @@ const handler = createMcpHandler(
  * This endpoint downloads files and sends mail from a personal Gmail account,
  * so it must not be open to the internet.
  *
- * Accepts the token from either the Authorization header or a ?token= query
- * param. The header is what curl and npm run check use. The query param
- * exists because the Claude custom-connector UI has no field for a custom
- * header — it only lets you configure a URL — and on any 401 it attempts
- * OAuth dynamic client registration against this domain, which this server
- * does not implement and fails with a confusing "couldn't register with
- * sign-in service" error. Putting the token in the URL means the very first
- * request already authenticates, so the client never receives a 401 and
- * never has a reason to attempt OAuth. WWW-Authenticate is deliberately not
- * sent on failure, since that header is what invited the OAuth attempt in
- * the first place.
+ * There are two ways in, and they are not equivalent.
  *
- * A URL-embedded token is a real step down from a header: it lands in
- * Vercel's access logs and leaks if the URL is ever pasted somewhere else.
- * Treat the deployment URL with the token attached as a secret in its own
- * right, not just the token in isolation.
+ * 1. An OAuth 2.1 access token in the Authorization header. This is the
+ *    normal path. The token is a short-lived JWT this deployment issued to a
+ *    client the owner approved by hand, it names the scopes that were
+ *    granted, and it expires in an hour. See lib/oauth/server.ts.
+ *
+ * 2. The static MCP_AUTH_TOKEN, in the header or as ?token=. This is the old
+ *    scheme, kept as a fallback so a broken OAuth flow cannot lock the owner
+ *    out of their own server, and so curl and npm run check keep working
+ *    without a browser redirect. It is the weaker credential and it defines
+ *    the real security of this endpoint while it remains enabled: it never
+ *    expires, it carries every scope, and in the query-string form it lands
+ *    in Vercel's access logs. Unset MCP_AUTH_TOKEN in the deployment to
+ *    close it off once OAuth is connected and working.
+ *
+ * On failure this replies 401 with a WWW-Authenticate header pointing at the
+ * protected-resource metadata. That header is what makes OAuth discovery
+ * start — an earlier version of this file deliberately withheld it, because
+ * without an authorization server behind it the client's discovery attempt
+ * only produced a confusing sign-in error. Now there is one, so the header
+ * is the entry point rather than a dead end.
  */
+
+const RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
+
+type Granted = { scopes: Set<string>; via: "oauth" | "static-key" };
+
+function challenge(req: Request, error: string, description: string, scope?: string) {
+  const params = [
+    'realm="mcp-libgen-kindle"',
+    `error="${error}"`,
+    `error_description="${description.replace(/"/g, "'")}"`,
+    scope ? `scope="${scope}"` : "",
+    `resource_metadata="${origin(req)}${RESOURCE_METADATA_PATH}"`,
+  ].filter(Boolean);
+  return params.join(", ");
+}
+
+function unauthorized(req: Request, description: string) {
+  return new Response(JSON.stringify({ error: "invalid_token", error_description: description }), {
+    status: 401,
+    headers: {
+      "Content-Type": "application/json",
+      "WWW-Authenticate": `Bearer ${challenge(req, "invalid_token", description)}`,
+    },
+  });
+}
+
+function authenticate(req: Request): Granted | Response {
+  const header = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const query = new URL(req.url).searchParams.get("token")?.trim();
+  const presented = header || query;
+
+  if (!presented) {
+    return unauthorized(req, "No access token supplied.");
+  }
+
+  const staticToken = process.env.MCP_AUTH_TOKEN;
+  if (staticToken && secretEquals(presented, staticToken)) {
+    return { scopes: new Set<string>(ALL_SCOPES), via: "static-key" };
+  }
+
+  if (!process.env.OAUTH_SIGNING_KEY) {
+    return new Response(
+      "Neither OAUTH_SIGNING_KEY nor a matching MCP_AUTH_TOKEN is set on the server, so " +
+        "no credential can be verified. Set them in the Vercel project's environment " +
+        "variables, then redeploy — existing deployments do not pick up variables added " +
+        "after they were built.",
+      { status: 503 }
+    );
+  }
+
+  let claims;
+  try {
+    claims = readTyped(presented, "access");
+  } catch (err) {
+    return unauthorized(req, err instanceof Error ? err.message : "Token rejected.");
+  }
+
+  // Audience and issuer are checked here rather than in verifyJwt because a
+  // valid signature only proves this server minted the token — not that it
+  // minted it for this resource. Skipping this is how a token handed to one
+  // MCP server gets replayed against another.
+  if (claims.aud !== resourceUrl(req)) {
+    return unauthorized(req, `Token audience ${claims.aud} is not ${resourceUrl(req)}.`);
+  }
+  if (claims.iss !== origin(req)) {
+    return unauthorized(req, `Token issuer ${claims.iss} is not ${origin(req)}.`);
+  }
+
+  return {
+    scopes: new Set(String(claims.scope || "").split(/\s+/).filter(Boolean)),
+    via: "oauth",
+  };
+}
+
+/**
+ * Which scopes this particular JSON-RPC body needs.
+ *
+ * Scope is enforced per tool rather than per endpoint, which means reading
+ * the request body before handing it on. The point is send_to_kindle: a
+ * connection can hold every other permission and still be unable to push a
+ * document to the device, because that is the one step nothing can undo.
+ */
+async function scopesNeeded(req: Request): Promise<{ scopes: Set<string>; id: unknown }> {
+  const needed = new Set<string>();
+  let id: unknown = null;
+  if (req.method !== "POST") return { scopes: needed, id };
+
+  try {
+    // clone() so the body is still readable by the MCP handler afterwards.
+    const body = await req.clone().json();
+    for (const call of Array.isArray(body) ? body : [body]) {
+      if (call?.method !== "tools/call") continue;
+      if (id === null) id = call?.id ?? null;
+      const scope = TOOL_SCOPES[call?.params?.name];
+      if (scope) needed.add(scope);
+    }
+  } catch {
+    // Unparseable body: let the MCP handler produce the protocol-level error.
+  }
+  return { scopes: needed, id };
+}
+
 function withAuth(inner: (req: Request) => Promise<Response>) {
   return async (req: Request): Promise<Response> => {
-    const expected = process.env.MCP_AUTH_TOKEN;
-    if (!expected) {
+    const auth = authenticate(req);
+    if (auth instanceof Response) return auth;
+
+    const { scopes: needed, id } = await scopesNeeded(req);
+    const missing = [...needed].filter((s) => !auth.scopes.has(s));
+    if (missing.length > 0) {
+      const description = `This token was not granted ${missing.join(", ")}.`;
       return new Response(
-        "MCP_AUTH_TOKEN is not set on the server. Add it in the Vercel project's " +
-          "environment variables, then redeploy — existing deployments do not pick " +
-          "up variables added after they were built.",
-        { status: 503 }
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: id ?? null,
+          error: { code: -32001, message: `${description} Reconnect and approve it to continue.` },
+        }),
+        {
+          // 403 with insufficient_scope is what RFC 6750 asks for; the
+          // JSON-RPC error body is there so a client that reads the payload
+          // instead of the status still gets told which scope was missing.
+          status: 403,
+          headers: {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": `Bearer ${challenge(req, "insufficient_scope", description, missing.join(" "))}`,
+          },
+        }
       );
     }
 
-    const header = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
-    const query = new URL(req.url).searchParams.get("token")?.trim();
-    const provided = header || query;
-
-    if (provided !== expected) {
-      return new Response("Unauthorized", { status: 401 });
-    }
     return inner(req);
   };
 }

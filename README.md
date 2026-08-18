@@ -122,14 +122,27 @@ Settings, add `SENDER_EMAIL` to the **Approved Personal Document E-mail List**.
 It must match exactly. If it does not, Amazon discards the email silently and
 nothing in this server can detect it.
 
-### 5. MCP auth token
+### 5. MCP endpoint auth
+
+The endpoint downloads files and sends mail from your Gmail, so it must not be
+open. Two values:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+openssl rand -hex 32          # -> OAUTH_SIGNING_KEY
 ```
 
-Put it in `MCP_AUTH_TOKEN`. The endpoint downloads files and sends mail from
-your Gmail, so it must not be open.
+`OAUTH_SIGNING_KEY` signs every authorization code and token this server
+issues, and never leaves the server. Rotating it invalidates everything at
+once, which is this deployment's only revocation mechanism.
+
+`OWNER_PASSWORD` is what you type on the consent screen when a client asks for
+access. It is the single human credential in the system — the consent page is
+public, so pick accordingly.
+
+`MCP_AUTH_TOKEN` is the older static bearer token. It still works as a
+fallback, which is useful while OAuth is being set up and for `/selftest`, but
+it never expires and carries every scope. Unset it in the deployment once the
+connector works.
 
 ### 6. Verify credentials
 
@@ -171,24 +184,65 @@ Add `&download=0` to test search only.
 
 ### 9. Connect to Claude
 
-Add as a custom connector, using this exact URL shape:
+Add as a custom connector with the bare URL — no token, no query string:
 
 ```
-https://<deployment>/api/mcp?token=<MCP_AUTH_TOKEN>
+https://<deployment>/api/mcp
 ```
 
-The token has to be in the URL, not a header — the connector UI has no field
-for custom headers, and if the URL is configured without any credential its
-first request gets a 401, which the client reads as an invitation to attempt
-OAuth sign-in ("couldn't register with mcp-libgen-kindle's sign-in service").
-This server doesn't implement OAuth, so that always fails. Putting the token
-in the URL means the very first request already authenticates, so no 401 is
-ever produced and the OAuth attempt never triggers.
+The client's first request gets a 401 carrying a `WWW-Authenticate` header
+that points at `/.well-known/oauth-protected-resource`. From there the client
+discovers the authorization server, registers itself, and opens the consent
+page in your browser. Type `OWNER_PASSWORD`, choose which permissions to grant,
+and it is connected. Access tokens last an hour and refresh silently.
 
-This is a real downgrade from a header: the token now sits in Vercel's access
-logs, and leaks if the URL is ever pasted anywhere else. Treat the full URL,
-not just the token, as something to keep private — if it needs to be rotated,
-changing `MCP_AUTH_TOKEN` in Vercel and reconnecting the connector is enough.
+Untick `kindle:send` on that page and the connection can search, download, and
+list — but `send_to_kindle` comes back refused. That is the one irreversible
+tool, so it is the one worth being able to withhold.
+
+The older `?token=<MCP_AUTH_TOKEN>` URL still works while `MCP_AUTH_TOKEN` is
+set in the deployment. It is worth keeping until the OAuth connection is proven,
+then unsetting: a token in a URL lands in Vercel's access logs and leaks if the
+URL is ever pasted anywhere.
+
+### How the OAuth side is put together
+
+This deployment plays both OAuth roles at once, which is unusual in production
+and sensible for one user:
+
+| Path | Role |
+|---|---|
+| `/api/mcp` | Resource server. Validates tokens, enforces scope per tool. |
+| `/.well-known/oauth-protected-resource` | RFC 9728. Names the authorization server. |
+| `/.well-known/oauth-authorization-server` | RFC 8414. Names the three endpoints below. |
+| `/api/oauth/register` | RFC 7591 dynamic client registration. |
+| `/api/oauth/authorize` | The consent screen. The only page a human sees. |
+| `/api/oauth/token` | Code and refresh-token exchange. |
+
+Nothing is stored. Client registrations, authorization codes, access tokens,
+and refresh tokens are all HS256 JWTs signed with `OAUTH_SIGNING_KEY` — Vercel
+functions have no shared state, and the alternative was attaching a database to
+hold three rows. The costs of that choice, stated plainly:
+
+- **No per-token revocation.** Rotating `OAUTH_SIGNING_KEY` is all-or-nothing.
+- **No one-time-use codes.** A code cannot be marked spent without somewhere to
+  record it. PKCE plus a 60-second lifetime is what limits the damage.
+- **Refresh tokens rotate but the old one stays valid** until it expires,
+  rather than being revoked on reuse.
+
+For one user with one client this is a reasonable trade. It would not be for
+anything multi-tenant.
+
+To watch the whole handshake happen, one printed step at a time:
+
+```bash
+npm run oauth -- https://<deployment>
+```
+
+That prints the 401 and its header, both discovery documents, the registration,
+the PKCE pair, the decoded authorization code, a deliberately failed exchange
+with the wrong verifier, the decoded access token, a scope refusal, and a
+refresh. It sends no mail and writes nothing.
 
 ## Local commands
 
@@ -196,6 +250,7 @@ changing `MCP_AUTH_TOKEN` in Vercel and reconnecting the connector is enough.
 npm run check      # validate all credentials, no side effects
 npm run preview -- "of mice and men steinbeck"   # see what the model would see
 npm run auth       # one-time Google consent flow
+npm run oauth      # walk the MCP OAuth handshake step by step, printing each one
 ```
 
 ## Known limits

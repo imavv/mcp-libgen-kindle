@@ -5,7 +5,21 @@ function required(name: string): string {
 }
 
 export const config = {
+  /**
+   * The pre-OAuth static credential. Optional now: /api/mcp accepts it as a
+   * fallback when it is set, and refuses it when it is not. Unset it in the
+   * deployment once the OAuth connection works to close that door.
+   */
   mcpAuthToken: () => required("MCP_AUTH_TOKEN"),
+
+  oauth: {
+    /** HMAC key for every code and token this server signs. Never leaves it. */
+    signingKey: () => required("OAUTH_SIGNING_KEY"),
+    /** Typed by the owner on the consent screen. The only human credential. */
+    ownerPassword: () => required("OWNER_PASSWORD"),
+    /** Override when the forwarded host is not the public URL. Rarely needed. */
+    issuer: () => process.env.OAUTH_ISSUER?.replace(/\/$/, "") || undefined,
+  },
 
   google: {
     clientId: () => required("GOOGLE_CLIENT_ID"),

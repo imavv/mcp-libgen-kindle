@@ -28,6 +28,7 @@ loadEnv(".env");
 
 let failures = 0;
 const pass = (msg: string) => console.log(`  ok    ${msg}`);
+const warn = (msg: string) => console.log(`  warn  ${msg}`);
 const fail = (msg: string) => {
   failures++;
   console.log(`  FAIL  ${msg}`);
@@ -36,7 +37,6 @@ const fail = (msg: string) => {
 async function checkEnv() {
   console.log("\nEnvironment");
   const required = [
-    "MCP_AUTH_TOKEN",
     "GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_REFRESH_TOKEN",
@@ -61,6 +61,45 @@ async function checkEnv() {
     fail("GMAIL_APP_PASSWORD contains spaces — remove them (Google shows it in groups of 4)");
   } else if (app && app.length !== 16) {
     fail(`GMAIL_APP_PASSWORD is ${app.length} chars, expected 16 — is this an app password, not your account password?`);
+  }
+}
+
+/**
+ * The MCP endpoint's own auth. Nothing here talks to the network — it is all
+ * local sanity checks, but they catch the two failures that otherwise show up
+ * as an unexplained sign-in error in the client.
+ */
+function checkMcpAuth() {
+  console.log("\nMCP endpoint auth");
+
+  const key = process.env.OAUTH_SIGNING_KEY || "";
+  if (!key) {
+    fail("OAUTH_SIGNING_KEY is not set — the OAuth flow cannot issue or verify anything");
+  } else if (key.length < 32) {
+    fail(`OAUTH_SIGNING_KEY is ${key.length} chars; use at least 32 (openssl rand -hex 32)`);
+  } else {
+    pass(`OAUTH_SIGNING_KEY (${key.length} chars)`);
+  }
+
+  const pw = process.env.OWNER_PASSWORD || "";
+  if (!pw) {
+    fail("OWNER_PASSWORD is not set — the consent screen has nothing to check against");
+  } else if (pw.length < 12) {
+    warn(`OWNER_PASSWORD is only ${pw.length} chars. It is the one credential standing ` +
+      "between a stranger and your Kindle, and the consent page is public.");
+  } else {
+    pass(`OWNER_PASSWORD (${pw.length} chars)`);
+  }
+
+  // Not a failure: the static token is a deliberate fallback. But it is the
+  // weakest way in, so its presence is worth stating out loud every run.
+  if (process.env.MCP_AUTH_TOKEN) {
+    warn(
+      "MCP_AUTH_TOKEN is set. /api/mcp still accepts it, with every scope and no " +
+        "expiry, including as ?token= in the URL. Unset it once OAuth works."
+    );
+  } else {
+    pass("MCP_AUTH_TOKEN is unset — OAuth is the only way into /api/mcp");
   }
 }
 
@@ -134,6 +173,7 @@ async function checkSmtp() {
 
 async function main() {
   await checkEnv();
+  checkMcpAuth();
   await checkDrive();
   await checkSmtp();
 
