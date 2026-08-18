@@ -24,6 +24,23 @@ on potentially different instances, and `/tmp` is not guaranteed to survive
 between them. It also gives you a durable library, so `list_library` can
 re-send a book without touching libgen again.
 
+### The confirmation checkpoint
+
+`download_book` stops after storing and does not hand the model a next step.
+Its tool result says the file is not yet sent and instructs the model to show
+the preview link and ask. `send_to_kindle` says in its description that it
+requires explicit confirmation first.
+
+This is deliberate and worth preserving if you edit those strings. An earlier
+version ended the `download_book` result with `Next: call send_to_kindle with
+drive_file_id=...` and the model reliably chained straight through to sending,
+giving no chance to look at the file. Sending is the irreversible step.
+
+Note the limit: this is influence, not enforcement. The server cannot tell
+whether a human actually confirmed. The only hard gate is client-side — if
+`send_to_kindle` is set to "always allow" in the connector's permissions, no
+prompt appears regardless of what these descriptions say.
+
 **No Playwright.** Serverless bundles cap out around 250 MB and Chromium does
 not fit. Everything here is plain `fetch`.
 

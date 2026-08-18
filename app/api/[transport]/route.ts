@@ -58,9 +58,11 @@ const handler = createMcpHandler(
 
     server.tool(
       "download_book",
-      "Download an ebook from libgen by md5 and store it in Google Drive. " +
-        "Returns a Drive file id to pass to send_to_kindle. The file is validated " +
-        "as a real EPUB before it is stored.",
+      "Download an ebook from libgen by md5 and store it in Google Drive. The " +
+        "file is validated as a real EPUB before it is stored. This tool does " +
+        "NOT send anything to the Kindle — it deliberately stops after storing. " +
+        "When it returns, show the user the preview link and ask whether they " +
+        "want it sent, then wait for their answer.",
       {
         md5: z.string().regex(/^[a-fA-F0-9]{32}$/).describe("md5 from a search_libgen row"),
         title: z.string().optional().describe("Title from the search row — becomes the Kindle title"),
@@ -72,14 +74,24 @@ const handler = createMcpHandler(
           const filename = buildFilename(title || md5, author || "");
           const stored = await uploadEpub(buffer, filename);
 
+          // Deliberately does not tell the model to call send_to_kindle next.
+          // An earlier version ended with "Next: call send_to_kindle with
+          // drive_file_id=..." and the model chained straight through to
+          // sending, with no chance for the user to look at the file first.
+          // Sending is the irreversible step here, so the stopping instruction
+          // lives in the tool result where the model reads it every time.
           return text(
             [
-              `Downloaded and stored: ${stored.filename} (${formatBytes(bytes)})`,
+              `Downloaded and stored — NOT yet sent to Kindle.`,
+              "",
+              `File: ${stored.filename} (${formatBytes(bytes)})`,
+              stored.webViewLink ? `Preview: ${stored.webViewLink}` : "",
               `Drive file id: ${stored.fileId}`,
-              stored.webViewLink ? `Link: ${stored.webViewLink}` : "",
               `Source: ${sourceUrl}`,
               "",
-              `Next: call send_to_kindle with drive_file_id="${stored.fileId}".`,
+              "Show the user the preview link so they can check the file, then " +
+                "ask whether they want it sent to their Kindle. Do not call " +
+                "send_to_kindle until they have answered yes.",
             ]
               .filter(Boolean)
               .join("\n")
@@ -93,6 +105,11 @@ const handler = createMcpHandler(
     server.tool(
       "send_to_kindle",
       "Email a stored EPUB from Google Drive to the configured Kindle address. " +
+        "REQUIRES EXPLICIT USER CONFIRMATION: only call this after the user has " +
+        "been asked whether to send this specific file and has answered yes. " +
+        "Never call it as an automatic follow-up to download_book — sending is " +
+        "irreversible and the user may want to check the file first. A request " +
+        "to find or download a book is not on its own permission to send it. " +
         "Amazon gives no delivery confirmation, so success here means the message " +
         "was accepted by the mail server, not that the book has appeared on the device.",
       {
