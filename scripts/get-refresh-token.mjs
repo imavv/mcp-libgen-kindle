@@ -17,8 +17,13 @@
  *  - If your OAuth consent screen is still in "Testing" status, the refresh
  *    token expires after 7 days and the server breaks weekly with a confusing
  *    error. Set the consent screen to "In production" before running this.
- *    The drive.file scope is not a restricted scope, so publishing does not
- *    require Google's verification review.
+ *
+ *  - drive.readonly IS a restricted scope, unlike drive.file. Publishing a
+ *    consent screen that requests it puts you in Google's verification review.
+ *    For a single-user app the practical options are to go through that review,
+ *    or to stay in "Testing" and re-run this script when the token expires.
+ *    Drop back to drive.file alone if you do not need to see files you added
+ *    to the library folder by hand.
  */
 
 import { createServer } from "node:http";
@@ -28,9 +33,15 @@ import { google } from "googleapis";
 const PORT = 53682;
 const REDIRECT_URI = `http://localhost:${PORT}/callback`;
 
-// Per-file access: this app can only touch files it created itself. Narrower
-// than full drive scope, and it keeps you out of the verification queue.
-const SCOPES = ["https://www.googleapis.com/auth/drive.file"];
+// drive.file  — create and manage the files this app uploads.
+// drive.readonly — read files it did not create, so books you drop into the
+// library folder by hand are visible to list_library and send_to_kindle.
+// Read-only is deliberate: the app never needs to modify or delete anything
+// outside its own uploads, and full drive scope would grant exactly that.
+const SCOPES = [
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/drive.readonly",
+];
 
 function loadEnvFile(path) {
   try {

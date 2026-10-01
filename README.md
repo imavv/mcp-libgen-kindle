@@ -87,9 +87,19 @@ npm run auth
 Keep that terminal open, approve in the browser, and paste the resulting
 `GOOGLE_REFRESH_TOKEN` into `.env.local`.
 
-The scope is `drive.file`, which is per-file access to files this app creates.
-It cannot see the rest of your Drive, and it is not a restricted scope, so
-publishing the consent screen needs no verification review.
+Two scopes are requested. `drive.file` grants per-file access to the files this
+app creates. `drive.readonly` grants read access to the rest of your Drive, and
+is what lets `list_library` and `send_to_kindle` see books you copied into the
+library folder yourself rather than downloading through the server.
+
+`drive.readonly` is a restricted scope, so publishing the consent screen does
+require Google's verification review. If you would rather skip that, drop
+`drive.readonly` from `SCOPES` in `scripts/get-refresh-token.mjs` and re-run
+`npm run auth` — the server then only sees its own uploads, as it did before.
+
+With the wider scope a folder lookup by name can match a folder this app did
+not create, so setting `GOOGLE_DRIVE_FOLDER_ID` is recommended. If two folders
+share the configured name, the server errors out rather than guessing.
 
 ### 3. Gmail app password
 

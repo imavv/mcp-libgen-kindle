@@ -27,9 +27,18 @@ function driveClient(): drive_v3.Drive {
 }
 
 /**
- * With the drive.file scope we can only see files this app created, which is
- * exactly why looking up our own folder by name is safe here — there is no
- * risk of colliding with an unrelated folder in the user's Drive.
+ * Locating the library folder.
+ *
+ * This used to be trivially safe: under drive.file alone the app could only
+ * see folders it had created itself, so a name lookup could not collide with
+ * anything else in the Drive. With drive.readonly added — so that books added
+ * to the folder by hand are visible — a name lookup now searches the whole
+ * Drive, and "Kindle Library" could match a folder this app never made.
+ *
+ * So the search is restricted to folders the user owns, and an ambiguous
+ * result is a hard error rather than a coin flip: silently picking the wrong
+ * folder would upload books somewhere unexpected. Setting
+ * GOOGLE_DRIVE_FOLDER_ID skips all of this and is the recommended setup.
  */
 async function ensureFolder(drive: drive_v3.Drive): Promise<string> {
   const configured = config.google.folderId();
@@ -38,12 +47,24 @@ async function ensureFolder(drive: drive_v3.Drive): Promise<string> {
 
   const name = config.google.folderName();
   const existing = await drive.files.list({
-    q: `mimeType='${FOLDER_MIME}' and name='${name.replace(/'/g, "\\'")}' and trashed=false`,
+    q:
+      `mimeType='${FOLDER_MIME}' and name='${name.replace(/'/g, "\\'")}' ` +
+      `and trashed=false and 'me' in owners`,
     fields: "files(id,name)",
-    pageSize: 1,
+    orderBy: "createdTime",
+    pageSize: 10,
   });
 
-  const found = existing.data.files?.[0]?.id;
+  const matches = existing.data.files || [];
+  if (matches.length > 1) {
+    throw new Error(
+      `Found ${matches.length} folders named "${name}" in your Drive ` +
+        `(${matches.map((f) => f.id).join(", ")}). Set GOOGLE_DRIVE_FOLDER_ID ` +
+        `to the one you want so the server does not have to guess.`
+    );
+  }
+
+  const found = matches[0]?.id;
   if (found) {
     cachedFolderId = found;
     return found;
@@ -108,8 +129,11 @@ export async function listLibrary(limit = 25): Promise<StoredFile[]> {
   const drive = driveClient();
   const parent = await ensureFolder(drive);
 
+  // Books added to the folder by hand show up here too, so the listing can no
+  // longer assume everything in it was uploaded by this app. Subfolders are
+  // excluded because their ids are not something send_to_kindle can use.
   const res = await drive.files.list({
-    q: `'${parent}' in parents and trashed=false`,
+    q: `'${parent}' in parents and trashed=false and mimeType!='${FOLDER_MIME}'`,
     fields: "files(id,name,size,webViewLink)",
     orderBy: "createdTime desc",
     pageSize: limit,

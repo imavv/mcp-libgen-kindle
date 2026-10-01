@@ -83,11 +83,12 @@ async function checkDrive() {
     pass("refresh token exchanged for an access token");
 
     const drive = google.drive({ version: "v3", auth });
-    // Read-only. Under the drive.file scope this only ever sees files this app
-    // created, so an empty list on a fresh setup is the expected result.
+    // Read-only. With drive.readonly this sees the whole Drive, not just the
+    // app's own uploads, so a non-zero count here says nothing about whether
+    // the library folder is set up correctly.
     const res = await drive.files.list({ pageSize: 5, fields: "files(id,name)" });
     const count = res.data.files?.length ?? 0;
-    pass(`Drive API reachable (${count} app-created file${count === 1 ? "" : "s"} visible)`);
+    pass(`Drive API reachable (${count} file${count === 1 ? "" : "s"} visible)`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     fail(`Drive auth failed: ${msg}`);
