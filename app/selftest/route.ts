@@ -105,7 +105,7 @@ export async function GET(req: Request) {
 
     const t1 = Date.now();
     const target = result.candidates[0];
-    const dl = await downloadByMd5(target.md5, budgetLeft);
+    const dl = await downloadByMd5(target.md5, "epub", budgetLeft);
     const check = validateEpub(dl.buffer);
     steps.download = {
       ok: check.ok,

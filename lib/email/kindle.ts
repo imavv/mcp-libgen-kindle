@@ -22,7 +22,8 @@ export interface SendResult {
 
 export async function sendToKindle(
   buffer: Buffer,
-  filename: string
+  filename: string,
+  contentType = "application/epub+zip"
 ): Promise<SendResult> {
   const from = config.kindle.sender();
   const to = config.kindle.to();
@@ -43,7 +44,7 @@ export async function sendToKindle(
     to,
     // Amazon ignores the subject for personal documents, but a readable one
     // helps when you are digging through sent mail to debug a missing book.
-    subject: filename.replace(/\.epub$/i, ""),
+    subject: filename.replace(/\.[a-z0-9]+$/i, ""),
     // Must be non-empty. Nodemailer treats a falsy body as "no text part", and
     // with the attachment then the only part it emits a single-part message
     // whose top-level Content-Type is application/epub+zip — no multipart/mixed
@@ -51,7 +52,7 @@ export async function sendToKindle(
     // no structure, and rejects the whole thing with "E009 - No Attachment".
     text: "Sent via libgen-kindle.",
     attachments: [
-      { filename, content: buffer, contentType: "application/epub+zip" },
+      { filename, content: buffer, contentType },
     ],
   });
 

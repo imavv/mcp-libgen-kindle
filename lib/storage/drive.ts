@@ -15,7 +15,6 @@ import { config } from "../config";
  * Google accounts, so they cannot own files in your My Drive.
  */
 
-const EPUB_MIME = "application/epub+zip";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 let cachedFolderId: string | undefined;
@@ -86,16 +85,17 @@ export interface StoredFile {
   webViewLink?: string;
 }
 
-export async function uploadEpub(
+export async function uploadBook(
   buffer: Buffer,
-  filename: string
+  filename: string,
+  mimeType: string
 ): Promise<StoredFile> {
   const drive = driveClient();
   const parent = await ensureFolder(drive);
 
   const res = await drive.files.create({
-    requestBody: { name: filename, parents: [parent], mimeType: EPUB_MIME },
-    media: { mimeType: EPUB_MIME, body: Readable.from(buffer) },
+    requestBody: { name: filename, parents: [parent], mimeType },
+    media: { mimeType, body: Readable.from(buffer) },
     fields: "id,name,size,webViewLink",
   });
 
@@ -108,7 +108,7 @@ export async function uploadEpub(
   };
 }
 
-export async function downloadEpub(
+export async function downloadBook(
   fileId: string
 ): Promise<{ buffer: Buffer; filename: string }> {
   const drive = driveClient();

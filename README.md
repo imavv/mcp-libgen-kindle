@@ -1,8 +1,8 @@
 # mcp-libgen
 
-MCP server that searches Library Genesis for EPUBs, stores them in Google Drive,
-and emails them to a Kindle. Runs on Vercel so it works from the Claude mobile
-app, not just a local desktop client.
+MCP server that searches Library Genesis for ebooks, stores them in Google
+Drive, and emails them to a Kindle. Runs on Vercel so it works from the Claude
+mobile app, not just a local desktop client.
 
 ## How it works
 
@@ -12,8 +12,8 @@ search_libgen(query)      HTTP only. Fetches the search page, extracts the id
                           json.php. No browser automation.
         |
         v   model picks a row
-download_book(md5)        Fetches the file, validates it is a real EPUB,
-                          uploads it to Google Drive.
+download_book(md5, ext)   Fetches the file, validates its magic number against
+                          the requested format, uploads it to Google Drive.
         |
         v
 send_to_kindle(file_id)   Pulls it back out of Drive and emails it.
@@ -210,6 +210,13 @@ npm run auth       # one-time Google consent flow
 
 ## Known limits
 
+- **Formats.** `search_libgen` and `download_book` handle epub, pdf, mobi,
+  azw3 and djvu; each is validated by magic number, so bytes that do not match
+  the requested extension are rejected rather than stored under a wrong name.
+  Amazon only accepts **epub and pdf** as personal documents — it dropped MOBI
+  from Send to Kindle in 2022 — so `send_to_kindle` refuses the other three
+  instead of emailing a file Amazon would discard without telling anyone.
+  Convert those with Calibre, or pick an epub edition.
 - **No delivery confirmation.** Amazon does not acknowledge personal document
   delivery. `send_to_kindle` can only report that the message was accepted by
   the mail server. If a book never appears, the approved-sender list is the

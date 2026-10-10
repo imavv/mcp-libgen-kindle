@@ -1,5 +1,5 @@
 import { config, fetchWithTimeout, FETCH_TIMEOUT_MS } from "../config";
-import { validateEpub } from "../epub/validate";
+import { validateFile } from "../epub/validate";
 
 /**
  * Download endpoints vary by mirror and by fork, and the exact one that works
@@ -31,11 +31,17 @@ const KEYED_LINK_RE = /href\s*=\s*["']([^"']*get\.php\?[^"']*\bkey=[^"']*)["']/g
 
 /** Fallback for mirrors using a different shape, still excluding page assets. */
 const FALLBACK_LINK_RE =
-  /href\s*=\s*["']([^"']*(?:get\.php\?[^"']*md5=|\/main\/[0-9a-f]{32}|\.epub)[^"']*)["']/gi;
+  /href\s*=\s*["']([^"']*(?:get\.php\?[^"']*md5=|\/main\/[0-9a-f]{32}|\.(?:epub|pdf|mobi|azw3|djvu))[^"']*)["']/gi;
 
 /** Static assets that must never be mistaken for the book. */
 const ASSET_PATH_RE = /\.(css|js|png|jpe?g|gif|ico|svg|woff2?|ttf|webp)(\?|#|$)/i;
-const ASSET_TYPE_RE = /text\/css|javascript|^image\/|^font\/|^text\/plain/i;
+/**
+ * DjVu is served as image/vnd.djvu, so the image/ rule has to make room for
+ * it — without the exception, every DjVu download is discarded as a page
+ * asset and the book looks unavailable.
+ */
+const ASSET_TYPE_RE =
+  /text\/css|javascript|^image\/(?!vnd\.djvu)|^font\/|^text\/plain/i;
 
 const MAX_BYTES = 50 * 1024 * 1024; // Amazon's per-message attachment ceiling.
 
@@ -138,7 +144,12 @@ const TOTAL_BUDGET_MS = 50_000;
 const MIN_ATTEMPT_MS = 6_000;
 
 /**
- * Fetch an epub by md5, validating the bytes before returning them.
+ * Fetch a book by md5, validating the bytes before returning them.
+ *
+ * The transport is format-blind — libgen's ads.php/get.php pair serves
+ * whatever file the md5 names, with no format parameter anywhere in it. Only
+ * the validation step cares, so `extension` is what decides which magic
+ * number the bytes have to match.
  *
  * Returns the buffer rather than writing to disk: on Vercel the only writable
  * path is /tmp, which is not guaranteed to survive to the next invocation.
@@ -146,6 +157,7 @@ const MIN_ATTEMPT_MS = 6_000;
  */
 export async function downloadByMd5(
   md5: string,
+  extension = "epub",
   budgetMs = TOTAL_BUDGET_MS
 ): Promise<DownloadResult> {
   const attempts: string[] = [];
@@ -157,7 +169,7 @@ export async function downloadByMd5(
       const remaining = deadline - Date.now();
       if (remaining < MIN_ATTEMPT_MS) {
         attempts.push(`gave up after ${Math.round(budgetMs / 1000)}s budget exhausted`);
-        return failed(md5, attempts);
+        return failed(md5, extension, attempts);
       }
 
       const url = buildPath(mirror, md5);
@@ -172,7 +184,7 @@ export async function downloadByMd5(
           continue;
         }
 
-        const check = validateEpub(got.buffer);
+        const check = validateFile(got.buffer, extension);
         if (!check.ok) {
           attempts.push(`${url}: ${check.reason}`);
           continue;
@@ -185,12 +197,12 @@ export async function downloadByMd5(
     }
   }
 
-  return failed(md5, attempts);
+  return failed(md5, extension, attempts);
 }
 
-function failed(md5: string, attempts: string[]): never {
+function failed(md5: string, extension: string, attempts: string[]): never {
   throw new Error(
-    `Could not retrieve a valid EPUB for md5 ${md5}. Tried:\n` +
+    `Could not retrieve a valid ${extension.toUpperCase()} for md5 ${md5}. Tried:\n` +
       attempts.map((a) => `  - ${a}`).join("\n")
   );
 }

@@ -3,8 +3,8 @@ import { z } from "zod";
 import { config } from "@/lib/config";
 import { searchLibgen, toMarkdown, formatBytes } from "@/lib/libgen/search";
 import { downloadByMd5 } from "@/lib/libgen/download";
-import { buildFilename } from "@/lib/epub/validate";
-import { uploadEpub, downloadEpub, listLibrary } from "@/lib/storage/drive";
+import { buildFilename, formatFor, formatForFilename, SUPPORTED_EXTENSIONS } from "@/lib/epub/validate";
+import { uploadBook, downloadBook, listLibrary } from "@/lib/storage/drive";
 import { sendToKindle } from "@/lib/email/kindle";
 
 /**
@@ -59,20 +59,32 @@ const handler = createMcpHandler(
     server.tool(
       "download_book",
       "Download an ebook from libgen by md5 and store it in Google Drive. The " +
-        "file is validated as a real EPUB before it is stored. This tool does " +
-        "NOT send anything to the Kindle — it deliberately stops after storing. " +
-        "When it returns, show the user the preview link and ask whether they " +
-        "want it sent, then wait for their answer.",
+        "bytes are validated against the chosen format's magic number before " +
+        "they are stored, so pass the same extension the search row reported — " +
+        "a mismatch is rejected rather than stored under the wrong name. This " +
+        "tool does NOT send anything to the Kindle — it deliberately stops " +
+        "after storing. When it returns, show the user the preview link and ask " +
+        "whether they want it sent, then wait for their answer.",
       {
         md5: z.string().regex(/^[a-fA-F0-9]{32}$/).describe("md5 from a search_libgen row"),
         title: z.string().optional().describe("Title from the search row — becomes the Kindle title"),
         author: z.string().optional().describe("Author from the search row"),
+        extension: z
+          .enum(SUPPORTED_EXTENSIONS as [string, ...string[]])
+          .optional()
+          .default("epub")
+          .describe(
+            "File format of the chosen row. Must match the row's extension. " +
+              "epub and pdf can be emailed to a Kindle; mobi, azw3 and djvu are " +
+              "stored in Drive but Amazon will not accept them."
+          ),
       },
-      async ({ md5, title, author }) => {
+      async ({ md5, title, author, extension }) => {
         try {
-          const { buffer, sourceUrl, bytes } = await downloadByMd5(md5.toLowerCase());
-          const filename = buildFilename(title || md5, author || "");
-          const stored = await uploadEpub(buffer, filename);
+          const spec = formatFor(extension);
+          const { buffer, sourceUrl, bytes } = await downloadByMd5(md5.toLowerCase(), spec.ext);
+          const filename = buildFilename(title || md5, author || "", spec.ext);
+          const stored = await uploadBook(buffer, filename, spec.mime);
 
           // Deliberately does not tell the model to call send_to_kindle next.
           // An earlier version ended with "Next: call send_to_kindle with
@@ -88,6 +100,11 @@ const handler = createMcpHandler(
               stored.webViewLink ? `Preview: ${stored.webViewLink}` : "",
               `Drive file id: ${stored.fileId}`,
               `Source: ${sourceUrl}`,
+              spec.kindle
+                ? ""
+                : `Note: Amazon does not accept ${spec.ext.toUpperCase()} as a personal ` +
+                  `document, so send_to_kindle will refuse this file. It is in Drive ` +
+                  `for use with another reader.`,
               "",
               "Show the user the preview link so they can check the file, then " +
                 "ask whether they want it sent to their Kindle. Do not call " +
@@ -104,7 +121,9 @@ const handler = createMcpHandler(
 
     server.tool(
       "send_to_kindle",
-      "Email a stored EPUB from Google Drive to the configured Kindle address. " +
+      "Email a stored book from Google Drive to the configured Kindle address. " +
+        "Amazon accepts EPUB and PDF as personal documents; MOBI, AZW3 and DjVu " +
+        "are refused here rather than sent, because Amazon drops them silently. " +
         "REQUIRES EXPLICIT USER CONFIRMATION: only call this after the user has " +
         "been asked whether to send this specific file and has answered yes. " +
         "Never call it as an automatic follow-up to download_book — sending is " +
@@ -122,7 +141,21 @@ const handler = createMcpHandler(
       },
       async ({ drive_file_id, dry_run }) => {
         try {
-          const { buffer, filename } = await downloadEpub(drive_file_id);
+          const { buffer, filename } = await downloadBook(drive_file_id);
+
+          // Amazon drops an unsupported attachment without telling anyone, so
+          // refusing here is the difference between a clear error and a book
+          // that never arrives for reasons nobody can see.
+          const spec = formatForFilename(filename);
+          if (spec && !spec.kindle) {
+            return errorText(
+              new Error(
+                `Amazon does not accept ${spec.ext.toUpperCase()} as a personal document, ` +
+                  `so "${filename}" would be dropped without notice. Download an EPUB or ` +
+                  `PDF edition instead, or convert this file with Calibre first.`
+              )
+            );
+          }
 
           if (dry_run) {
             return text(
@@ -131,7 +164,7 @@ const handler = createMcpHandler(
             );
           }
 
-          const result = await sendToKindle(buffer, filename);
+          const result = await sendToKindle(buffer, filename, spec?.mime);
           if (result.rejected.length > 0) {
             return errorText(
               new Error(`SMTP rejected: ${result.rejected.join(", ")}`)
