@@ -66,6 +66,41 @@ and fed the stylesheet to the epub validator, which reported it as
 `got bytes 2f 2a` — the opening of a CSS comment. If this breaks again, check
 what `fetchFileOrFollow` actually retrieved before assuming the mirror is down.
 
+## Request flow
+
+```
+search_libgen(query)
+  1. index.php?req=…              → HTML; scrape the id list
+  2. json.php?object=f&ids=…      → file records: md5, extension, size (filter by format here)
+  3. json.php?object=e&ids=…      → edition records: title, author, year
+  ⇒ results table, one md5 per row
+
+        model picks a row
+
+download_book(md5, extension)
+  4. ads.php?md5=…                → HTML; scrape the one-time keyed link
+  5. get.php?md5=…&key=…          → 307 to CDN (cdnX.booksdl.lc) → file bytes
+  6. validate the file's format, upload to Google Drive
+
+send_to_kindle(drive_file_id)
+  7. read the file from Drive, email it to the Kindle address
+```
+
+**md5** identifies the file and never changes. **key** is a one-time token from
+`ads.php` that expires quickly, so it can't be reused.
+
+### libgen endpoints
+
+| URL | Returns | Category |
+|---|---|---|
+| `index.php?req=…` | Search results page | HTML scraping (only the id list is read) |
+| `json.php?object=f&ids=…` | File records (JSON) | Public API, no key |
+| `json.php?object=e&ids=…` | Edition records (JSON) | Public API, no key |
+| `ads.php?md5=…` | Download page with keyed link | HTML scraping |
+| `get.php?md5=…&key=…` | 307 redirect to the file | File download |
+
+All calls are anonymous. libgen limits by IP, not by key.
+
 ## Setup
 
 ### 1. Install
